@@ -6327,19 +6327,36 @@ function applyInput(){
   n.comp2.threshold.value=-8-I.comp.amt*30; n.comp2.ratio.value=2+I.comp.amt*8; n.comp2.knee.value=8;
   T(n.out.gain,dbg(I.out)); T(n.mon.gain,I.monitor?1:0);
 }
+// ask for the microphone straight away (before anything else is awaited) so Safari still sees it as your tap and shows its permission box
+async function askMic(){
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia) throw {name:'NoMediaDevices'};
+  const base={echoCancellation:false,noiseSuppression:false,autoGainControl:false};
+  try{ return await navigator.mediaDevices.getUserMedia({audio:S.input.dev?Object.assign({deviceId:{exact:S.input.dev}},base):base}); }
+  catch(err){ if(S.input.dev&&err&&(err.name==='OverconstrainedError'||err.name==='NotFoundError')){ S.input.dev=''; return await navigator.mediaDevices.getUserMedia({audio:base}); }   // a saved input that's no longer plugged in: use the default one
+    throw err; } }
+function micWhy(err){ const n=err&&err.name||'';
+  if(window.claude&&!/NotFound/.test(n)) return "The microphone isn't available here. Inside the Claude app, pages can't use the microphone; open your own copy of the groovebox (from GitHub Pages) in Safari for that. For now, choose “Test with an audio file” to try the amp and the looper.";
+  if(n==='NoMediaDevices') return "This browser isn't offering the microphone to this page. It only works on a secure (https) address, opened in Safari or Chrome.";
+  if(n==='NotAllowedError'||n==='SecurityError') return "The microphone was blocked. On iPhone: Settings → Apps → Safari → Microphone → Ask or Allow, then reload this page. On Mac: Safari → Settings for this website → Microphone → Allow, then reload. Then pick Microphone again.";
+  if(n==='NotFoundError') return 'No microphone or audio interface was found. Plug one in (or check the Mac’s Sound settings) and pick Microphone again.';
+  if(n==='NotReadableError'||n==='AbortError') return 'The microphone is busy in another app (a call, a recording app or another tab). Close that, then pick Microphone again.';
+  return "Couldn't start the microphone"+(n?` (${n}${err.message?': '+err.message:''})`:'')+'. Pick Microphone again to retry.'; }
 async function setSource(kind){
+  let st=null,micErr=null;
+  if(kind==='mic'){ initAudio(); try{ st=await askMic(); }catch(err){ micErr=err; } }   // first thing, while it still counts as your tap
   S.input.src=kind; renderInput();
-  if(!(await buildInput())) return;
   if(IN.src){ try{ IN.src.stop&&IN.src.stop(); }catch(e){} try{ IN.src.disconnect(); }catch(e){} IN.src=null; }
   if(IN.stream){ IN.stream.getTracks().forEach(t=>t.stop()); IN.stream=null; }
   if(kind==='mic'){
-    try{
-      const st=await navigator.mediaDevices.getUserMedia({audio:{deviceId:S.input.dev?{exact:S.input.dev}:undefined,echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
-      IN.stream=st; IN.src=ctx.createMediaStreamSource(st); routeInput(); listDevices();
-      inStat('Listening to '+(st.getAudioTracks()[0].label||'the microphone')+'.');
-    }catch(err){ S.input.src='off'; renderInput();
-      inStat("The microphone isn't available here. Inside the Claude app, pages can't use the microphone, so this will work once the app runs on its own. For now, choose “Test with an audio file” to try the amp and the looper."); }
-  }else if(kind==='file'){ if(IN.fileBuf) startFileSrc(); else inStat('Choose an audio file, like a dry guitar recording, to play through the chain on a loop.'); }
+    if(!st){ S.input.src='off'; renderInput(); inStat(micWhy(micErr)); return; }
+    if(ctx&&ctx.state!=='running'){ try{ await ctx.resume(); }catch(e){} }
+    if(!(await buildInput())){ st.getTracks().forEach(t=>t.stop()); S.input.src='off'; renderInput(); inStat('The microphone is allowed, but the input effects could not start in this browser.'); return; }
+    IN.stream=st; IN.src=ctx.createMediaStreamSource(st); routeInput(); listDevices();
+    inStat('Listening to '+(st.getAudioTracks()[0].label||'the microphone')+'.');
+    return;
+  }
+  if(!(await buildInput())) return;
+  if(kind==='file'){ if(IN.fileBuf) startFileSrc(); else inStat('Choose an audio file, like a dry guitar recording, to play through the chain on a loop.'); }
   else inStat('Input is off.');
 }
 function startFileSrc(){ stopFileSrc(true); const s=ctx.createBufferSource(); s.buffer=IN.fileBuf; s.loop=true; IN.src=s; routeInput(); s.start(); inStat(`Playing ${IN.fileName} through the chain on a loop.`); fileBtn(); }
